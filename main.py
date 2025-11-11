@@ -5,9 +5,14 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import mplfinance as mpf
-from telegram import Bot, InputFile
 from datetime import datetime, timedelta
 import logging
+import os
+from dotenv import load_dotenv
+from lib.sms.sms import send_message
+
+# .env dosyasını yükle
+load_dotenv()
 
 # Logging ayarları
 logging.basicConfig(
@@ -19,9 +24,11 @@ logging.basicConfig(
 # --------------------------
 # Ayarlar
 # --------------------------
-BOT_TOKEN = "7749035187:AAHS0VeTaSBXTPKBnrQgtg6Qkdx0tkMYRI8"
-CHAT_ID = 734522640
-bot = Bot(token=BOT_TOKEN)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("❌ BOT_TOKEN ve CHAT_ID .env dosyasında tanımlanmalı!")
 
 # Takip listesi (sizin belirttiğiniz coinler)
 COINS = ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT", "WIFUSDT",
@@ -250,16 +257,12 @@ def plot_chart(df, tp=None, sl=None, symbol="COIN"):
     logging.info(f"✅ {symbol} grafiği oluşturuldu: {path}")
     return path
 
-async def send_message(text, chart_path=None):
-    if chart_path:
-        with open(chart_path, "rb") as f:
-            await bot.send_document(chat_id=CHAT_ID, document=InputFile(f), caption=text)
-    else:
-        await bot.send_message(chat_id=CHAT_ID, text=text)
+# send_message fonksiyonu artık lib.sms.sms modülünden import ediliyor
 
 # --------------------------
 # Ana döngü
 # --------------------------
+
 async def main():
     logging.info("=" * 60)
     logging.info("🚀 Crypto Sinyal Bot başlatılıyor...")
@@ -267,6 +270,25 @@ async def main():
     logging.info(f"⏱️  Kontrol periyodu: {PERIOD_SECONDS//60} dakika")
     logging.info(f"🎯 TP: %{TP_PERCENT} | 🛑 SL: %{SL_PERCENT}")
     logging.info("=" * 60)
+    
+    # Bot başlangıç mesajı gönder
+    startup_message = (
+        f"🚀 *BOT BAŞLATILDI* 🚀\n\n"
+        f"⏰ Başlangıç zamanı: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"📋 Takip edilen coinler:\n{', '.join(COINS)}\n\n"
+        f"⏱️ Kontrol periyodu: {PERIOD_SECONDS//60} dakika\n"
+        f"🎯 Take Profit: %{TP_PERCENT}\n"
+        f"🛑 Stop Loss: %{SL_PERCENT}\n"
+        f"📊 Min ADX: {ADX_MIN}\n"
+        f"📈 Hacim eşiği: %{VOLUME_THRESHOLD_PCT}\n\n"
+        f"✅ Bot aktif ve sinyal arayışında!"
+    )
+    
+    try:
+        await send_message(startup_message)
+        logging.info("✅ Başlangıç mesajı Telegram'a gönderildi!")
+    except Exception as e:
+        logging.error(f"❌ Başlangıç mesajı gönderilemedi: {e}")
     
     last_sent_text = {coin: None for coin in COINS}
     last_sent_time = {coin: datetime.min for coin in COINS}
@@ -286,22 +308,78 @@ async def main():
                 logging.info(f"💰 {coin} güncel fiyat: {price}")
                 
                 side, details = calculate_signal(df)
-                # Sinyal yoksa devam et
-                if side is None:
-                    logging.info(f"⏸️  {coin} için sinyal yok, devam ediliyor...")
+                
+                # Her coin için detaylı bilgi göster
+                if details:
+                    trend_text = ""
+                    if details.get("ema50") is not None and details.get("ema200") is not None:
+                        if details["ema50"] > details["ema200"]:
+                            trend_text = "📈 Yükseliş trendi (EMA50>EMA200)"
+                        else:
+                            trend_text = "📉 Düşüş trendi (EMA50<EMA200)"
+                    
+                    vol_pct_str = f"{details['vol_pct']:.1f}%" if details.get("vol_pct") is not None else "N/A"
+                    adx_str = f"{details['adx']:.1f}" if details.get("adx") is not None else "N/A"
+                    rsi_str = f"{details['rsi']:.1f}" if details.get("rsi") is not None else "N/A"
+                    macd_str = details.get("macd_cross", "N/A")
+                    
+                    logging.info(f"📊 Trend: {trend_text}")
+                    logging.info(f"📈 RSI: {rsi_str} | MACD Cross: {macd_str} | ADX: {adx_str}")
+                    logging.info(f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})")
+                    
+                    # Koşulların durumu
+                    if side is None:
+                        reasons = []
+                        if details.get("ema50") and details.get("ema200"):
+                            if details["ema50"] > details["ema200"]:
+                                if not (details.get("rsi") and details["rsi"] < 40):
+                                    reasons.append(f"RSI yeterince düşük değil ({rsi_str}, <40 olmalı)")
+                                if macd_str != "bull":
+                                    reasons.append(f"MACD bullish cross yok ({macd_str})")
+                            else:
+                                if not (details.get("rsi") and details["rsi"] > 60):
+                                    reasons.append(f"RSI yeterince yüksek değil ({rsi_str}, >60 olmalı)")
+                                if macd_str != "bear":
+                                    reasons.append(f"MACD bearish cross yok ({macd_str})")
+                        
+                        if details.get("adx") and details["adx"] <= ADX_MIN:
+                            reasons.append(f"ADX yetersiz ({adx_str}, >{ADX_MIN} olmalı)")
+                        
+                        if details.get("vol_pct") and details["vol_pct"] < VOLUME_THRESHOLD_PCT:
+                            reasons.append(f"Hacim artışı yetersiz ({vol_pct_str}, >%{VOLUME_THRESHOLD_PCT} olmalı)")
+                        
+                        if reasons:
+                            logging.info(f"⏸️  Sinyal YOK - Eksik koşullar:")
+                            for reason in reasons:
+                                logging.info(f"   ❌ {reason}")
+                        else:
+                            logging.info(f"⏸️  {coin} için sinyal yok")
+                        continue
+                else:
+                    logging.info(f"⏸️  {coin} için detay bilgisi alınamadı")
                     continue
 
+                # Sinyal tespit edildi!
+                logging.info(f"{'🟢' if side == 'LONG' else '🔴'} ═══ {side} SİNYALİ TESPİT EDİLDİ! ═══")
+                logging.info(f"✅ Tüm koşullar sağlandı:")
+                logging.info(f"   ✓ Trend: {trend_text}")
+                logging.info(f"   ✓ RSI: {rsi_str} {'(<40 ✓)' if side == 'LONG' else '(>60 ✓)'}")
+                logging.info(f"   ✓ MACD Cross: {macd_str} ✓")
+                logging.info(f"   ✓ ADX: {adx_str} (>{ADX_MIN} ✓)")
+                logging.info(f"   ✓ Hacim artışı: {vol_pct_str} (>%{VOLUME_THRESHOLD_PCT} ✓)")
+                
                 tp, sl = calculate_tp_sl_values(price, side)
+                logging.info(f"🎯 TP: {tp} | 🛑 SL: {sl}")
 
                 # Mesajı oluştur
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 emoji = "🟢" if side == "LONG" else "🔴"
-                trend_text = ""
+                trend_text_msg = ""
                 if details.get("ema50") is not None and details.get("ema200") is not None:
                     if details["ema50"] > details["ema200"]:
-                        trend_text = "Yükseliş (EMA50>EMA200)"
+                        trend_text_msg = "Yükseliş (EMA50>EMA200)"
                     else:
-                        trend_text = "Düşüş (EMA50<EMA200)"
+                        trend_text_msg = "Düşüş (EMA50<EMA200)"
                 vol_pct_str = f"{details['vol_pct']:.1f}%" if details.get("vol_pct") is not None else "N/A"
                 adx_str = f"{details['adx']:.1f}" if details.get("adx") is not None else "N/A"
                 rsi_str = f"{details['rsi']:.1f}" if details.get("rsi") is not None else "N/A"
@@ -310,7 +388,7 @@ async def main():
                 message = (
                     f"⏱️ {now}\n"
                     f"💰 {coin} güncel fiyat: {price}\n"
-                    f"📊 Sinyal: {emoji} {side} | Trend: {trend_text}\n"
+                    f"📊 Sinyal: {emoji} {side} | Trend: {trend_text_msg}\n"
                     f"📈 RSI: {rsi_str} | MACD: {macd_str} | ADX: {adx_str} | Hacim artışı: {vol_pct_str}\n"
                     f"🎯 TP: {tp} | 🛑 SL: {sl}"
                 )
