@@ -1,0 +1,8 @@
+requests
+pandas
+pandas-ta
+numpy
+mplfinance
+python-telegram-bot
+python-dotenv
+
