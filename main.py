@@ -420,6 +420,11 @@ async def main():
                 logging.error(f"❌ {coin} işlem hatası: {e}")
 
         logging.info(f"\n💤 Tüm coinler kontrol edildi. {PERIOD_SECONDS//60} dakika bekleniyor...\n")
+        try:
+            await send_message(f"💤 Tüm coinler kontrol edildi. {PERIOD_SECONDS//60} dakika bekleniyor...", chat_types=["log"])
+            logging.info("✅ Tüm mesajlar Telegram'a gönderildi!")
+        except Exception as e:
+            logging.error(f"❌ Tüm mesajlar Telegram'a gönderilemedi: {e}")
         await asyncio.sleep(PERIOD_SECONDS)
 
 if __name__ == "__main__":
