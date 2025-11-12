@@ -276,7 +276,7 @@ async def main():
     )
     
     try:
-        await send_message(startup_message)
+        await send_message(startup_message, chat_types=["signal","log"])
         logging.info("✅ Başlangıç mesajı Telegram'a gönderildi!")
     except Exception as e:
         logging.error(f"❌ Başlangıç mesajı gönderilemedi: {e}")
@@ -343,6 +343,23 @@ async def main():
                             logging.info(f"⏸️  Sinyal YOK - Eksik koşullar:")
                             for reason in reasons:
                                 logging.info(f"   ❌ {reason}")
+                            
+                            # Diagnostic mesajını Telegram'a gönder
+                            diagnostic_message = (
+                                f"📊 {coin} Analiz Raporu\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"💰 Güncel fiyat: {price}\n"
+                                f"📊 Trend: {trend_text}\n"
+                                f"📈 RSI: {rsi_str} | MACD Cross: {macd_str} | ADX: {adx_str}\n"
+                                f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})\n\n"
+                                f"⏸️ Sinyal YOK - Eksik koşullar:\n"
+                            )
+                            for reason in reasons:
+                                diagnostic_message += f"   ❌ {reason}\n"
+                            diagnostic_message += f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - GMT-6"
+                            
+                            # Log chat'e gönder
+                            await send_message(diagnostic_message, chat_types=["log"])
                         else:
                             logging.info(f"⏸️  {coin} için sinyal yok")
                         continue
@@ -377,9 +394,10 @@ async def main():
                 macd_str = details.get("macd_cross", "N/A")
 
                 message = (
-                    f"⏱️ {now}\n"
+                    f"⏱️ {now} - GMT-6\n"
                     f"💰 {coin} güncel fiyat: {price}\n"
-                    f"📊 Sinyal: {emoji} {side} | Trend: {trend_text_msg}\n"
+                    f"✳️ Sinyal: {emoji} {side}\n"
+                    f"📊 Trend: {trend_text_msg}\n"
                     f"📈 RSI: {rsi_str} | MACD: {macd_str} | ADX: {adx_str} | Hacim artışı: {vol_pct_str}\n"
                     f"🎯 TP: {tp} | 🛑 SL: {sl}"
                 )
