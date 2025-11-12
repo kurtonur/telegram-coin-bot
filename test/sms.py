@@ -6,7 +6,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from lib.sms.sms import test_text_message, test_message_with_chart
+from lib.sms.sms import test_text_message, test_multi_chat_message, test_message_with_chart
 
 async def main():
     """Ana test fonksiyonu"""
@@ -14,15 +14,20 @@ async def main():
     print("🧪 SMS/Telegram Mesaj Testi Başlatılıyor...")
     print("=" * 50)
     print()
-    
+
     # Test 1: Basit metin mesajı
-    await test_message_with_chart()
+    await test_text_message()
+    print()
+
+    # Test 1: Basit metin mesajı
+    await test_multi_chat_message()
     print()
     
     # Test 2: Grafik ile mesaj (opsiyonel)
-    # await test_message_with_chart()
-    
+    await test_message_with_chart()
     print()
+
+    # Test 2: Grafik ile mesaj (opsiyonel)
     print("=" * 50)
     print("✅ Tüm testler tamamlandı!")
     print("=" * 50)

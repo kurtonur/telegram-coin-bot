@@ -21,15 +21,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# --------------------------
-# Ayarlar
-# --------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("❌ BOT_TOKEN ve CHAT_ID .env dosyasında tanımlanmalı!")
-
 # Takip listesi (sizin belirttiğiniz coinler)
 COINS = ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT", "WIFUSDT",
          "PEPEUSDT", "SHIBUSDT", "AVAXUSDT", "SUIUSDT", "LTCUSDT", "XRPUSDT"]
@@ -274,7 +265,7 @@ async def main():
     # Bot başlangıç mesajı gönder
     startup_message = (
         f"🚀 *BOT BAŞLATILDI* 🚀\n\n"
-        f"⏰ Başlangıç zamanı: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"⏰ Başlangıç zamanı: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - GMT-6 \n\n"
         f"📋 Takip edilen coinler:\n{', '.join(COINS)}\n\n"
         f"⏱️ Kontrol periyodu: {PERIOD_SECONDS//60} dakika\n"
         f"🎯 Take Profit: %{TP_PERCENT}\n"
@@ -399,7 +390,7 @@ async def main():
                 if resend_allowed:
                     logging.info(f"📤 {coin} için Telegram mesajı gönderiliyor...")
                     chart_path = plot_chart(df, tp=tp, sl=sl, symbol=coin)
-                    await send_message(message, chart_path=chart_path)
+                    await send_message(message, chat_types=["signal","log"], chart_path=chart_path)
                     last_sent_text[coin] = message
                     last_sent_time[coin] = datetime.now()
                     logging.info(f"✅ {coin} mesajı başarıyla gönderildi!")
