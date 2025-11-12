@@ -15,7 +15,7 @@ load_dotenv(dotenv_path=env_path)
 ENV = os.getenv("ENV")
 
 if ENV == "pro":
-    SIGNAL_CHAT_ID = os.getenv("CHAT_ID")
+    SIGNAL_CHAT_ID = os.getenv("SIGNAL_CHAT_ID")
     SIGNAL_LOG_CHAT_ID = os.getenv("SIGNAL_LOG_CHAT_ID")
 else:
     TEST_ENV_KEY = "SIGNAL_TEST_CHAT_ID"
