@@ -281,7 +281,7 @@ async def main():
         f"🎯 Take Profit: %{TP_PERCENT}\n"
         f"🛑 Stop Loss: %{SL_PERCENT}\n"
         f"📊 Min ADX: {ADX_MIN}\n"
-        f"📈 Hacim eşiği: %{VOLUME_THRESHOLD_PCT}\n\n"
+        # f"📈 Hacim eşiği: %{VOLUME_THRESHOLD_PCT}\n\n" # Hacim eşiği kaldırıldı
         f"✅ Bot aktif ve sinyal arayışında!"
     )
     
@@ -385,7 +385,7 @@ async def main():
                 logging.info(f"   ✓ RSI: {rsi_str} {'(<40 ✓)' if side == 'LONG' else '(>60 ✓)'}")
                 logging.info(f"   ✓ MACD Cross: {macd_str} ✓")
                 logging.info(f"   ✓ ADX: {adx_str} (>{ADX_MIN} ✓)")
-                logging.info(f"   ✓ Hacim artışı: {vol_pct_str} (>%{VOLUME_THRESHOLD_PCT} ✓)")
+                # logging.info(f"   ✓ Hacim artışı: {vol_pct_str} (>%{VOLUME_THRESHOLD_PCT} ✓)") # Hacim eşiği kaldırıldı
                 
                 tp, sl = calculate_tp_sl_values(price, side)
                 logging.info(f"🎯 TP: {tp} | 🛑 SL: {sl}")
@@ -411,7 +411,8 @@ async def main():
                     f"💰 Güncel fiyat: {price}\n"
                     f"✳️ Sinyal: {emoji} {side}\n"
                     f"📊 Trend: {trend_text_msg}\n"
-                    f"📈 RSI: {rsi_str} | MACD: {macd_str} | ADX: {adx_str} | Hacim artışı: {vol_pct_str}\n"
+                    f"📈 RSI: {rsi_str} | MACD: {macd_str} | ADX: {adx_str}"
+                    #f"📈 Hacim artışı: {vol_pct_str}\n" # Hacim eşiği kaldırıldı
                     f"🎯 TP: {tp} | 🛑 SL: {sl}\n\n"
                     f"⏰ {now} - GMT-6"
                 )
