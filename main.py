@@ -66,7 +66,7 @@ def display_menu(strategies, selected_index):
     
     print("-" * 60)
     print()
-    print(f"  Seçili: {strategies[selected_index]['name'] if strategies else 'Yok'}")
+    print(f"  Seçili: {strategies[selected_index]['name'].replace('-', ' ').capitalize() if strategies else 'Yok'}")
 
 def get_key():
     """Klavye tuşunu oku (Windows için)"""
