@@ -3,8 +3,13 @@ import sys
 import time
 import importlib.util
 from pathlib import Path
-import msvcrt  # Windows için built-in
 from dotenv import load_dotenv
+
+# Platform-specific imports
+if os.name == 'nt':
+    import msvcrt  # Windows için built-in
+else:
+    msvcrt = None  # Linux/Mac için
 
 def clear_screen():
     """Ekranı temizle"""
