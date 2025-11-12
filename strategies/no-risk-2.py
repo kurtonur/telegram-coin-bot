@@ -282,7 +282,7 @@ async def main():
         f"🛑 Stop Loss: %{SL_PERCENT}\n"
         f"📊 Min ADX: {ADX_MIN}\n"
         # f"📈 Hacim eşiği: %{VOLUME_THRESHOLD_PCT}\n\n" # Hacim eşiği kaldırıldı
-        f"✅ Bot aktif ve sinyal arayışında!"
+        f"\n✅ Bot aktif ve sinyal arayışında!"
     )
     
     try:
@@ -326,7 +326,7 @@ async def main():
                     
                     logging.info(f"📊 Trend: {trend_text}")
                     logging.info(f"📈 RSI: {rsi_str} | MACD Cross: {macd_str} | ADX: {adx_str}")
-                    logging.info(f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})")
+                    #logging.info(f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})") # Hacim eşiği kaldırıldı
                     
                     # Koşulların durumu
                     if side is None:
@@ -362,7 +362,7 @@ async def main():
                                 f"💰 Güncel fiyat: {price}\n"
                                 f"📊 Trend: {trend_text}\n"
                                 f"📈 RSI: {rsi_str} | MACD Cross: {macd_str} | ADX: {adx_str}\n"
-                                f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})\n\n"
+                                #f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})\n\n" # Hacim eşiği kaldırıldı
                                 f"⏸️ Sinyal YOK - Eksik koşullar:\n"
                             )
                             for reason in reasons:
