@@ -7,11 +7,11 @@ import mplfinance as mpf
 from datetime import datetime, timedelta
 import logging
 import os
-from dotenv import load_dotenv
 from lib.sms.sms import send_message
+from lib.utils import get_candles, get_tp_and_sl, get_chart
 
-# .env dosyasını yükle
-load_dotenv()
+strategy_name = os.path.splitext(os.path.basename(__file__))[0]
+strategy_name = strategy_name.replace("-", " ").capitalize()
 
 # Logging ayarları
 logging.basicConfig(
@@ -32,61 +32,12 @@ VOLUME_WINDOW = 10  # hacim ortalaması için mum sayısı
 VOLUME_THRESHOLD_PCT = 15  # %15 üzerinde olmalı
 ADX_MIN = 20  # ADX eşik
 MIN_DATA_LEN = 60  # gerekli minimum mum sayısı (EMA200 için >200 ideal ama 60 ile çalışıyoruz)
-
 # Spam önleme: aynı coin için en az bu kadar süre bekle (dakika)
 MIN_RESEND_MINUTES = 30
 
 # --------------------------
 # Yardımcı fonksiyonlar
 # --------------------------
-def get_candles(symbol="BTCUSDT", limit=300):
-    """
-    Bitget spot 15m mumları çek (limit up to maybe 300)
-    """
-    logging.info(f"📊 {symbol} için veri çekiliyor...")
-    url = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity=15min&limit={limit}"
-    try:
-        resp = requests.get(url, timeout=15)
-        data = resp.json()
-        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-            # Data format may be list of lists (timestamp,open,high,low,close,volume,...)
-            # Ensure we convert correctly.
-            df = pd.DataFrame(data["data"])
-            # If API returns more than 6 columns, take first 6 expected columns
-            # Normalize to: timestamp, open, high, low, close, volume
-            if df.shape[1] >= 6:
-                df = df.iloc[:, :6]
-                df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
-            else:
-                return None
-
-            # convert types reliably
-            df = df.dropna()
-            df["open"] = pd.to_numeric(df["open"], errors="coerce")
-            df["high"] = pd.to_numeric(df["high"], errors="coerce")
-            df["low"] = pd.to_numeric(df["low"], errors="coerce")
-            df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-
-            # timestamps from API might be in ms or seconds or strings — try to coerce
-            try:
-                df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms")
-            except Exception:
-                try:
-                    df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="s")
-                except Exception:
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-
-            df.set_index("timestamp", inplace=True)
-            df = df.sort_index()
-            logging.info(f"✅ {symbol} için {len(df)} mum verisi başarıyla çekildi")
-            return df
-        else:
-            logging.warning(f"⚠️ {symbol} için veri bulunamadı")
-            return None
-    except Exception as e:
-        logging.error(f"❌ {symbol} veri çekmede hata: {e}")
-        return None
 
 def safe_ta_macd(close_series):
     """MACD dönen DataFrame kontrolü"""
@@ -229,38 +180,11 @@ def calculate_signal(df):
     logging.debug(f"⏸️  Sinyal yok (EMA50/200, RSI, MACD, ADX veya hacim koşulları sağlanmadı)")
     return None, details
 
-def calculate_tp_sl_values(price, side):
-    if side == "LONG":
-        tp = price * (1 + TP_PERCENT/100.0)
-        sl = price * (1 - SL_PERCENT/100.0)
-    elif side == "SHORT":
-        tp = price * (1 - TP_PERCENT/100.0)
-        sl = price * (1 + SL_PERCENT/100.0)
-    else:
-        return None, None
-    return round(tp, 4), round(sl, 4)
-
-def plot_chart(df, tp=None, sl=None, symbol="COIN"):
-    logging.info(f"📊 {symbol} için grafik çiziliyor...")
-    path = f"{symbol}_15m_chart.png"
-    add_lines = []
-    if tp is not None:
-        add_lines.append(mpf.make_addplot([tp]*len(df), linestyle="--"))
-    if sl is not None:
-        add_lines.append(mpf.make_addplot([sl]*len(df), linestyle="--"))
-    mpf.plot(df, type='candle', style='charles', volume=True, addplot=add_lines, savefig=path)
-    logging.info(f"✅ {symbol} grafiği oluşturuldu: {path}")
-    return path
-
 # send_message fonksiyonu artık lib.sms.sms modülünden import ediliyor
 
 # --------------------------
 # Ana döngü
 # --------------------------
-
-
-strategy_name = os.path.splitext(os.path.basename(__file__))[0]
-strategy_name = strategy_name.replace("-", " ").capitalize()
 
 async def main():
     logging.info("=" * 60)
@@ -368,9 +292,9 @@ async def main():
                             for reason in reasons:
                                 diagnostic_message += f"   ❌ {reason}\n"
                             diagnostic_message += f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - GMT-6"
-                            
+
                             # Log chat'e gönder
-                            await send_message(diagnostic_message, chat_types=["log"])
+                            await send_message(text=diagnostic_message, chat_types=["log"])
                         else:
                             logging.info(f"⏸️  {coin} için sinyal yok")
                         continue
@@ -387,7 +311,7 @@ async def main():
                 logging.info(f"   ✓ ADX: {adx_str} (>{ADX_MIN} ✓)")
                 # logging.info(f"   ✓ Hacim artışı: {vol_pct_str} (>%{VOLUME_THRESHOLD_PCT} ✓)") # Hacim eşiği kaldırıldı
                 
-                tp, sl = calculate_tp_sl_values(price, side)
+                tp, sl = get_tp_and_sl(df=df, signal=side, tp_percent=TP_PERCENT, sl_percent=SL_PERCENT)
                 logging.info(f"🎯 TP: {tp} | 🛑 SL: {sl}")
 
                 # Mesajı oluştur
@@ -422,8 +346,8 @@ async def main():
 
                 if resend_allowed:
                     logging.info(f"📤 {coin} için Telegram mesajı gönderiliyor...")
-                    chart_path = plot_chart(df, tp=tp, sl=sl, symbol=coin)
-                    await send_message(message, chat_types=["signal","log"], chart_path=chart_path)
+                    chart_path = await get_chart(df=df, strategy_name=strategy_name, granularity="15min", tp=tp, sl=sl, symbol=coin)
+                    await send_message(text=message, chat_types=["signal","log"], chart_path=chart_path)
                     last_sent_text[coin] = message
                     last_sent_time[coin] = datetime.now()
                     logging.info(f"✅ {coin} mesajı başarıyla gönderildi!")
