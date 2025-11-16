@@ -1,0 +1,410 @@
+import asyncio
+import requests
+import pandas as pd
+import pandas_ta as ta
+import numpy as np
+import mplfinance as mpf
+from datetime import datetime, timedelta
+import logging
+import os
+from lib.sms.sms import send_message
+from lib.utils import get_candles, get_tp_and_sl, get_chart
+
+strategy_name = os.path.splitext(os.path.basename(__file__))[0]
+strategy_name = strategy_name.replace("-", " ").capitalize()
+
+# Logging ayarları
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Takip listesi (sizin belirttiğiniz coinler)
+COINS = ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT", "WIFUSDT",
+         "PEPEUSDT", "SHIBUSDT", "AVAXUSDT", "SUIUSDT", "LTCUSDT", "XRPUSDT"]
+
+# Zamanlama ve TP/SL ayarları
+PERIOD_SECONDS = 15 * 60  # 15 dakika
+TP_PERCENT = 1.0  # %1.0
+SL_PERCENT = 0.6  # %0.6
+VOLUME_WINDOW = 10  # hacim ortalaması için mum sayısı
+VOLUME_THRESHOLD_PCT = 15  # %15 üzerinde olmalı
+ADX_MIN = 20  # ADX eşik
+MIN_DATA_LEN = 60  # gerekli minimum mum sayısı (EMA200 için >200 ideal ama 60 ile çalışıyoruz)
+# Spam önleme: aynı coin için en az bu kadar süre bekle (dakika)
+MIN_RESEND_MINUTES = 30
+
+# --------------------------
+# Yardımcı fonksiyonlar
+# --------------------------
+
+def safe_ta_macd(close_series):
+    """MACD dönen DataFrame kontrolü"""
+    try:
+        macd = ta.macd(close_series)
+        # Beklenen kolonlar: MACD_12_26_9, MACDh_12_26_9, MACDs_12_26_9
+        if macd is None or macd.shape[1] < 3:
+            return None
+        return macd
+    except Exception:
+        return None
+
+def safe_ta_adx(high, low, close):
+    try:
+        adx = ta.adx(high, low, close)
+        if adx is None or "ADX_14" not in adx.columns:
+            return None
+        return adx
+    except Exception:
+        return None
+
+def calculate_signal(df):
+    """
+    Tüm filtreleri uygular. Eğer güçlü LONG veya SHORT varsa (tüm koşullar sağlanır)
+    döndürür: ("LONG" veya "SHORT", detay_dict)
+    Aksi halde None döner.
+    """
+    if df is None or len(df) < MIN_DATA_LEN:
+        logging.debug(f"⚠️ Yetersiz veri: {len(df) if df is not None else 0} mum (minimum {MIN_DATA_LEN} gerekli)")
+        return None, None
+
+    # Indikatörler
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    vol = df["volume"]
+
+    rsi = ta.rsi(close, length=14)
+    # Trend check disabled - comment out to re-enable
+    # ema50 = ta.ema(close, length=50)
+    # ema200 = ta.ema(close, length=200)
+    ema50 = None
+    ema200 = None
+    macd_df = safe_ta_macd(close)
+    adx_df = safe_ta_adx(high, low, close)
+
+    # Son değerler (güvenli çekim)
+    try:
+        rsi_last = float(rsi.iloc[-1]) if not rsi.isna().iloc[-1] else None
+    except Exception:
+        rsi_last = None
+
+    # Trend check disabled - comment out to re-enable
+    # try:
+    #     ema50_last = float(ema50.iloc[-1]) if not ema50.isna().iloc[-1] else None
+    #     ema200_last = float(ema200.iloc[-1]) if not ema200.isna().iloc[-1] else None
+    # except Exception:
+    #     ema50_last = ema200_last = None
+    ema50_last = None
+    ema200_last = None
+
+    # MACD cross kontrolü
+    macd_cross = None
+    if macd_df is not None:
+        try:
+            macd_line = macd_df.iloc[:, 0]  # MACD line
+            macd_signal = macd_df.iloc[:, 2]  # signal line
+            macd_last = float(macd_line.iloc[-1])
+            macd_signal_last = float(macd_signal.iloc[-1])
+            macd_prev = float(macd_line.iloc[-2])
+            macd_signal_prev = float(macd_signal.iloc[-2])
+            # Bullish cross: prev MACD <= prev SIGNAL and last MACD > last SIGNAL
+            if (macd_prev <= macd_signal_prev) and (macd_last > macd_signal_last):
+                macd_cross = "bull"
+            # Bearish cross:
+            elif (macd_prev >= macd_signal_prev) and (macd_last < macd_signal_last):
+                macd_cross = "bear"
+        except Exception:
+            macd_cross = None
+
+    # ADX
+    adx_last = None
+    if adx_df is not None:
+        try:
+            adx_last = float(adx_df["ADX_14"].iloc[-1])
+        except Exception:
+            adx_last = None
+
+    # Volume check
+    # vol_avg = None
+    # vol_last = None
+    # try:
+    #     vol_avg = float(vol.rolling(VOLUME_WINDOW).mean().iloc[-2])  # ölçü: önceki mumlar ortalaması
+    #     vol_last = float(vol.iloc[-1])
+    # except Exception:
+    #     vol_avg = vol_last = None
+
+    # vol_pct = None
+    # if vol_avg and vol_last:
+    #     try:
+    #         vol_pct = (vol_last - vol_avg) / vol_avg * 100.0
+    #     except Exception:
+    #         vol_pct = None
+    
+    # Volume check disabled - set to None
+    vol_avg = None
+    vol_last = None
+    vol_pct = None
+
+    # Koşullar:
+    # LONG:
+    #  - EMA50 > EMA200  # Trend check disabled - comment out to re-enable
+    #  - RSI < 40
+    #  - MACD bullish cross
+    #  - ADX > ADX_MIN
+    #  - vol_pct >= VOLUME_THRESHOLD_PCT
+    long_ok = False
+    short_ok = False
+
+    # Trend check disabled - comment out to re-enable
+    # if (ema50_last is not None and ema200_last is not None and
+    #     rsi_last is not None and macd_cross is not None and adx_last is not None):  # vol_pct check commented out
+    #     if ema50_last > ema200_last and rsi_last < 40 and macd_cross == "bull" and adx_last > ADX_MIN:  # and vol_pct >= VOLUME_THRESHOLD_PCT:
+    #         long_ok = True
+    #     if ema50_last < ema200_last and rsi_last > 60 and macd_cross == "bear" and adx_last > ADX_MIN:  # and vol_pct >= VOLUME_THRESHOLD_PCT:
+    #         short_ok = True
+    
+    # Trend check disabled - only RSI, MACD, and ADX conditions
+    if (rsi_last is not None and macd_cross is not None and adx_last is not None):
+        if rsi_last < 40 and macd_cross == "bull" and adx_last > ADX_MIN:  # Trend check removed: ema50_last > ema200_last
+            long_ok = True
+        if rsi_last > 60 and macd_cross == "bear" and adx_last > ADX_MIN:  # Trend check removed: ema50_last < ema200_last
+            short_ok = True
+
+    # Detaylar raporu
+    details = {
+        "rsi": rsi_last,
+        # Trend check disabled - comment out to re-enable
+        # "ema50": ema50_last,
+        # "ema200": ema200_last,
+        "ema50": ema50_last,  # None (trend check disabled)
+        "ema200": ema200_last,  # None (trend check disabled)
+        "macd_cross": macd_cross,
+        "adx": adx_last,
+        "vol_last": vol_last,
+        "vol_avg": vol_avg,
+        "vol_pct": vol_pct
+    }
+
+    if long_ok:
+        logging.info(f"🟢 LONG sinyali tespit edildi!")
+        return "LONG", details
+    if short_ok:
+        logging.info(f"🔴 SHORT sinyali tespit edildi!")
+        return "SHORT", details
+    
+    # Trend check disabled - comment out to re-enable
+    # logging.debug(f"⏸️  Sinyal yok (EMA50/200, RSI, MACD, ADX veya hacim koşulları sağlanmadı)")
+    logging.debug(f"⏸️  Sinyal yok (RSI, MACD, ADX veya hacim koşulları sağlanmadı)")
+    return None, details
+
+# send_message fonksiyonu artık lib.sms.sms modülünden import ediliyor
+
+# --------------------------
+# Ana döngü
+# --------------------------
+
+async def main():
+    logging.info("=" * 60)
+    logging.info("🚀 Crypto Sinyal Bot başlatılıyor...")
+    logging.info(f"📋 Strateji: {strategy_name}")
+    logging.info(f"📋 Takip edilen coinler: {', '.join(COINS)}")
+    logging.info(f"⏱️  Kontrol periyodu: {PERIOD_SECONDS//60} dakika")
+    logging.info(f"🎯 TP: %{TP_PERCENT} | 🛑 SL: %{SL_PERCENT}")
+    logging.info("=" * 60)
+    
+    # Bot başlangıç mesajı gönder
+    startup_message = (
+        f"🚀 *BOT BAŞLATILDI* 🚀\n\n"
+        f"📋 Strateji: {strategy_name}\n\n"
+        f"⏰ Başlangıç zamanı: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - GMT-6 \n\n"
+        f"📋 Takip edilen coinler:\n{', '.join(COINS)}\n\n"
+        f"⏱️ Kontrol periyodu: {PERIOD_SECONDS//60} dakika\n"
+        f"🎯 Take Profit: %{TP_PERCENT}\n"
+        f"🛑 Stop Loss: %{SL_PERCENT}\n"
+        f"📊 Min ADX: {ADX_MIN}\n"
+        # f"📈 Hacim eşiği: %{VOLUME_THRESHOLD_PCT}\n\n" # Hacim eşiği kaldırıldı
+        f"\n✅ Bot aktif ve sinyal arayışında!"
+    )
+    
+    try:
+        await send_message(startup_message, chat_types=["signal","log"])
+        logging.info("✅ Başlangıç mesajı Telegram'a gönderildi!")
+    except Exception as e:
+        logging.error(f"❌ Başlangıç mesajı gönderilemedi: {e}")
+    
+    last_sent_text = {coin: None for coin in COINS}
+    last_sent_time = {coin: datetime.min for coin in COINS}
+
+    while True:
+        logging.info(f"\n\n🔄 Yeni kontrol döngüsü başlıyor... ({datetime.now().strftime('%H:%M:%S')})\n\n")
+        
+        for coin in COINS:
+            try:
+                logging.info(f"\n\n--- {coin} kontrol ediliyor ---")
+                df = get_candles(coin, limit=300)
+                if df is None or df.empty:
+                    logging.warning(f"⏭️  {coin} atlanıyor (veri yok)")
+                    continue
+
+                price = float(df["close"].iloc[-1])
+                logging.info(f"💰 {coin} güncel fiyat: {price}")
+                
+                side, details = calculate_signal(df)
+                
+                # Her coin için detaylı bilgi göster
+                if details:
+                    # Trend check disabled - comment out to re-enable
+                    # trend_text = ""
+                    # if details.get("ema50") is not None and details.get("ema200") is not None:
+                    #     if details["ema50"] > details["ema200"]:
+                    #         trend_text = "📈 Yükseliş trendi (EMA50>EMA200)"
+                    #     else:
+                    #         trend_text = "📉 Düşüş trendi (EMA50<EMA200)"
+                    trend_text = ""
+                    
+                    vol_pct_str = f"{details['vol_pct']:.1f}%" if details.get("vol_pct") is not None else "N/A"
+                    adx_str = f"{details['adx']:.1f}" if details.get("adx") is not None else "N/A"
+                    rsi_str = f"{details['rsi']:.1f}" if details.get("rsi") is not None else "N/A"
+                    macd_str = details.get("macd_cross", "N/A")
+                    
+                    # Trend check disabled - comment out to re-enable
+                    # logging.info(f"📊 Trend: {trend_text}")
+                    logging.info(f"📈 RSI: {rsi_str} | MACD Cross: {macd_str} | ADX: {adx_str}")
+                    #logging.info(f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})") # Hacim eşiği kaldırıldı
+                    
+                    # Koşulların durumu
+                    if side is None:
+                        reasons = []
+                        # Trend check disabled - comment out to re-enable
+                        # if details.get("ema50") and details.get("ema200"):
+                        #     if details["ema50"] > details["ema200"]:
+                        #         if not (details.get("rsi") and details["rsi"] < 40):
+                        #             reasons.append(f"RSI yeterince düşük değil ({rsi_str}, <40 olmalı)")
+                        #         if macd_str != "bull":
+                        #             reasons.append(f"MACD bullish cross yok ({macd_str})")
+                        #     else:
+                        #         if not (details.get("rsi") and details["rsi"] > 60):
+                        #             reasons.append(f"RSI yeterince yüksek değil ({rsi_str}, >60 olmalı)")
+                        #         if macd_str != "bear":
+                        #             reasons.append(f"MACD bearish cross yok ({macd_str})")
+                        
+                        # Trend check disabled - RSI ve MACD kontrolleri trend olmadan (her iki yön için kontrol)
+                        # LONG için kontroller
+                        if not (details.get("rsi") and details["rsi"] < 40):
+                            reasons.append(f"RSI yeterince düşük değil ({rsi_str}, <40 olmalı - LONG için)")
+                        if macd_str != "bull":
+                            reasons.append(f"MACD bullish cross yok ({macd_str} - LONG için)")
+                        # SHORT için kontroller
+                        if not (details.get("rsi") and details["rsi"] > 60):
+                            reasons.append(f"RSI yeterince yüksek değil ({rsi_str}, >60 olmalı - SHORT için)")
+                        if macd_str != "bear":
+                            reasons.append(f"MACD bearish cross yok ({macd_str} - SHORT için)")
+                        
+                        if details.get("adx") and details["adx"] <= ADX_MIN:
+                            reasons.append(f"ADX yetersiz ({adx_str}, >{ADX_MIN} olmalı)")
+                        
+                        if details.get("vol_pct") and details["vol_pct"] < VOLUME_THRESHOLD_PCT:
+                            reasons.append(f"Hacim artışı yetersiz ({vol_pct_str}, >%{VOLUME_THRESHOLD_PCT} olmalı)")
+                        
+                        if reasons:
+                            logging.info(f"⏸️  Sinyal YOK - Eksik koşullar:")
+                            for reason in reasons:
+                                logging.info(f"   ❌ {reason}")
+                            
+                            # Diagnostic mesajını Telegram'a gönder
+                            diagnostic_message = (
+                                f"📊 {coin} Analiz Raporu\n"
+                                f"━━━━━━━━━━━━━━━━━\n\n"
+                                f"📋 Strateji: {strategy_name}\n\n"
+                                f"💰 Güncel fiyat: {price}\n"
+                                # Trend check disabled - comment out to re-enable
+                                # f"📊 Trend: {trend_text}\n"
+                                f"📈 RSI: {rsi_str} | MACD Cross: {macd_str} | ADX: {adx_str}\n"
+                                #f"📊 Hacim artışı: {vol_pct_str} (Eşik: %{VOLUME_THRESHOLD_PCT})\n\n" # Hacim eşiği kaldırıldı
+                                f"⏸️ Sinyal YOK - Eksik koşullar:\n"
+                            )
+                            for reason in reasons:
+                                diagnostic_message += f"   ❌ {reason}\n"
+                            diagnostic_message += f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - GMT-6"
+
+                            # Log chat'e gönder
+                            await send_message(text=diagnostic_message, chat_types=["log"])
+                        else:
+                            logging.info(f"⏸️  {coin} için sinyal yok")
+                        continue
+                else:
+                    logging.info(f"⏸️  {coin} için detay bilgisi alınamadı")
+                    continue
+
+                # Sinyal tespit edildi!
+                logging.info(f"{'🟢' if side == 'LONG' else '🔴'} ═══ {side} SİNYALİ TESPİT EDİLDİ! ═══")
+                logging.info(f"✅ Tüm koşullar sağlandı:")
+                # Trend check disabled - comment out to re-enable
+                # logging.info(f"   ✓ Trend: {trend_text}")
+                logging.info(f"   ✓ RSI: {rsi_str} {'(<40 ✓)' if side == 'LONG' else '(>60 ✓)'}")
+                logging.info(f"   ✓ MACD Cross: {macd_str} ✓")
+                logging.info(f"   ✓ ADX: {adx_str} (>{ADX_MIN} ✓)")
+                # logging.info(f"   ✓ Hacim artışı: {vol_pct_str} (>%{VOLUME_THRESHOLD_PCT} ✓)") # Hacim eşiği kaldırıldı
+                
+                tp, sl = get_tp_and_sl(df=df, signal=side, tp_percent=TP_PERCENT, sl_percent=SL_PERCENT)
+                logging.info(f"🎯 TP: {tp} | 🛑 SL: {sl}")
+
+                # Mesajı oluştur
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                emoji = "🟢" if side == "LONG" else "🔴"
+                # Trend check disabled - comment out to re-enable
+                # trend_text_msg = ""
+                # if details.get("ema50") is not None and details.get("ema200") is not None:
+                #     if details["ema50"] > details["ema200"]:
+                #         trend_text_msg = "Yükseliş (EMA50>EMA200)"
+                #     else:
+                #         trend_text_msg = "Düşüş (EMA50<EMA200)"
+                trend_text_msg = ""
+                vol_pct_str = f"{details['vol_pct']:.1f}%" if details.get("vol_pct") is not None else "N/A"
+                adx_str = f"{details['adx']:.1f}" if details.get("adx") is not None else "N/A"
+                rsi_str = f"{details['rsi']:.1f}" if details.get("rsi") is not None else "N/A"
+                macd_str = details.get("macd_cross", "N/A")
+
+                message = (
+                    f"📊 {coin} Analiz Raporu\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📋 Strateji: {strategy_name}\n\n"
+                    f"💰 Güncel fiyat: {price}\n"
+                    f"✳️ Sinyal: {emoji} {side}\n"
+                    # Trend check disabled - comment out to re-enable
+                    # f"📊 Trend: {trend_text_msg}\n"
+                    f"📈 RSI: {rsi_str} | MACD: {macd_str} | ADX: {adx_str}"
+                    #f"📈 Hacim artışı: {vol_pct_str}\n" # Hacim eşiği kaldırıldı
+                    f"🎯 TP: {tp} | 🛑 SL: {sl}\n\n"
+                    f"⏰ {now} - GMT-6"
+                )
+
+                # Spam kontrolü: aynı mesajı tekrar göndermeme ve minimum bekleme süresi
+                resend_allowed = (last_sent_text[coin] != message) and (datetime.now() - last_sent_time[coin] > timedelta(minutes=MIN_RESEND_MINUTES))
+
+                if resend_allowed:
+                    logging.info(f"📤 {coin} için Telegram mesajı gönderiliyor...")
+                    chart_path = await get_chart(df=df, strategy_name=strategy_name, granularity="15min", tp=tp, sl=sl, symbol=coin)
+                    await send_message(text=message, chat_types=["signal","log"], chart_path=chart_path)
+                    last_sent_text[coin] = message
+                    last_sent_time[coin] = datetime.now()
+                    logging.info(f"✅ {coin} mesajı başarıyla gönderildi!")
+                else:
+                    time_since_last = (datetime.now() - last_sent_time[coin]).total_seconds() / 60
+                    logging.warning(f"⏳ {coin} için spam koruması aktif (son mesajdan {time_since_last:.1f} dk geçti, minimum {MIN_RESEND_MINUTES} dk gerekli)")
+
+            except Exception as e:
+                logging.error(f"❌ {coin} işlem hatası: {e}")
+
+        logging.info(f"\n\n💤 Tüm coinler kontrol edildi. {PERIOD_SECONDS//60} dakika bekleniyor...")
+        try:
+            await send_message(f"💤 Tüm coinler kontrol edildi. {PERIOD_SECONDS//60} dakika bekleniyor...", chat_types=["log"])
+            logging.info("✅ Tüm mesajlar Telegram'a gönderildi! \n\n")
+        except Exception as e:
+            logging.error(f"❌ Tüm mesajlar Telegram'a gönderilemedi: {e} \n\n")
+        await asyncio.sleep(PERIOD_SECONDS)
+
+if __name__ == "__main__":
+    asyncio.run(main())
