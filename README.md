@@ -53,9 +53,14 @@ cd telegram-coin-bot
 2. **Bağımlılıkları yükleyin:**
 
 ```bash
-bun install
-# veya
+# uv kullanıyorsanız (önerilen):
+uv sync
+
+# veya pip ile:
 pip install -r requirements.txt
+
+# veya pyproject.toml ile:
+pip install -e .
 ```
 
 3. **Environment değişkenlerini ayarlayın:**
@@ -80,6 +85,10 @@ SIGNAL_LOG_CHAT_ID=your_log_chat_id
 4. **Botu başlatın:**
 
 ```bash
+# uv kullanıyorsanız:
+uv run main.py
+
+# veya doğrudan Python ile:
 python main.py
 ```
 
